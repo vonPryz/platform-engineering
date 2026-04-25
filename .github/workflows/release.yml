@@ -1,0 +1,98 @@
+name: Release Pipeline
+
+on:
+  issue_comment:
+    types: [ created ]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request &&
+      github.event.comment.author_association == 'OWNER' &&
+      (github.event.comment.body == '/release' ||
+       github.event.comment.body == '/major-release')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check PR touches pr-driven-pipeline
+        id: path-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FILES=$(gh pr view ${{ github.event.issue.number }} --json files -q '.files[].path')
+          if echo "$FILES" | grep -q "^pr-driven-pipeline/"; then
+            echo "relevant=true" >> $GITHUB_OUTPUT
+          else
+            echo "relevant=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Report guard results
+        if: steps.path-check.outputs.relevant == 'true'
+        run: |
+          echo "All guards passed"
+          echo "Comment: ${{ github.event.comment.body }}"
+          echo "Author association: ${{ github.event.comment.author_association }}"
+          echo "PR touches pr-driven-pipeline: ${{ steps.path-check.outputs.relevant }}"
+
+      - name: Report path mismatch
+        if: steps.path-check.outputs.relevant != 'true'
+        run: |
+          echo "PR does not touch pr-driven-pipeline, skipping release"
+
+      - name: Check PR is merged
+        id: merge-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_STATE=$(gh pr view ${{ github.event.issue.number }} --json state -q '.state')
+          if [[ "$PR_STATE" != "MERGED" ]]; then
+            echo "❌ PR is not merged. Release can only be created after merge."
+            exit 1
+          fi
+          echo "✅ PR is merged, proceeding with release."
+
+      - name: Calculate new tag
+        if: steps.path-check.outputs.relevant == 'true'
+        id: tag
+        run: |
+          # Get latest tag, default to v0.0 if none exist
+          LATEST_TAG=$(git tag --sort=-version:refname | head -n1)
+          if [[ -z "$LATEST_TAG" ]]; then
+            LATEST_TAG="v0.0"
+          fi
+          echo "Latest tag: $LATEST_TAG"
+
+          # Split into major and minor
+          MAJOR=$(echo "$LATEST_TAG" | cut -d. -f1 | tr -d 'v')
+          MINOR=$(echo "$LATEST_TAG" | cut -d. -f2)
+
+          # Calculate new tag based on comment
+          if [[ "${{ github.event.comment.body }}" == "/major-release" ]]; then
+            NEW_TAG="v$((MAJOR + 1)).0"
+          else
+            NEW_TAG="v${MAJOR}.$((MINOR + 1))"
+          fi
+
+          echo "New tag: $NEW_TAG"
+          echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create tag and GitHub release
+        if: steps.path-check.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag ${{ steps.tag.outputs.new_tag }}
+          git push origin ${{ steps.tag.outputs.new_tag }}
+          gh release create ${{ steps.tag.outputs.new_tag }} \
+            --title "Release ${{ steps.tag.outputs.new_tag }}" \
+            --notes "Released via /release comment on PR #${{ github.event.issue.number }}"
+

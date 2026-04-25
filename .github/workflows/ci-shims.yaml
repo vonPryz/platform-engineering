@@ -1,0 +1,42 @@
+name: CI Simulations (GitHub Actions)
+
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: "Choose demo to run"
+        required: true
+        type: choice
+        options:
+          - simulate-cicd
+          - simulate-cicd-cpp
+          - simulate-cicd-node
+        default: simulate-cicd
+      app_version:
+        description: "App version to test (1, 2, or 3)"
+        required: true
+        default: "1"
+
+jobs:
+  test:
+    name: ${{ github.event.inputs.demo }} (v${{ github.event.inputs.app_version }})
+    runs-on: ubuntu-latest
+
+    env:
+      DEMO_DIR: ${{ github.event.inputs.demo }}
+      APP_VERSION: ${{ github.event.inputs.app_version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Show selection
+        run: |
+          echo "Demo: ${DEMO_DIR}"
+          echo "Version: v${APP_VERSION}"
+
+      - name: Run CI shim
+        working-directory: ./${{ github.event.inputs.demo }}
+        run: |
+          chmod u+x ./ci_shim.sh
+          ./ci_shim.sh "${APP_VERSION}"
